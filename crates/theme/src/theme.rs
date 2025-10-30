@@ -273,6 +273,8 @@ impl ThemeFamily {
             .collect::<Vec<_>>();
         let syntax_theme = SyntaxTheme::merge(Arc::new(SyntaxTheme::default()), syntax_highlights);
 
+        log::error!("syntax_theme: {:#?}", syntax_theme);
+
         let window_background_appearance = theme
             .style
             .window_background_appearance

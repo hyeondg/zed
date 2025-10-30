@@ -2,7 +2,8 @@
 mod syntax_map_tests;
 
 use crate::{
-    Grammar, InjectionConfig, Language, LanguageId, LanguageRegistry, QUERY_CURSORS, with_parser,
+    Grammar, HighlightId, InjectionConfig, Language, LanguageId, LanguageRegistry, QUERY_CURSORS,
+    with_parser,
 };
 use anyhow::Context as _;
 use collections::HashMap;
@@ -13,6 +14,7 @@ use std::{
     cmp::{self, Ordering, Reverse},
     collections::BinaryHeap,
     fmt, iter,
+    num::NonZeroI32,
     ops::{Deref, DerefMut, Range},
     sync::Arc,
 };
@@ -782,6 +784,188 @@ impl SyntaxSnapshot {
 
         drop(cursor);
         self.layers = layers;
+
+        use crate::HighlightMap;
+        use std::fs::File;
+        fn get_highlights_for_cursor(
+            cursor: &tree_sitter::TreeCursor,
+            syntax_snapshot: &SyntaxSnapshot,
+            buffer: &BufferSnapshot,
+            _highlight_map: &HighlightMap,
+        ) -> Vec<HighlightId> {
+            let node = cursor.node();
+            let byte_range = node.byte_range();
+
+            // Get captures for this range
+            let captures = syntax_snapshot.captures(byte_range, buffer, |grammar| {
+                grammar
+                    .highlights_config
+                    .as_ref()
+                    .map(|config| &config.query)
+            });
+
+            let highlight_maps: Vec<_> = captures
+                .grammars()
+                .iter()
+                .map(|grammar| grammar.highlight_map())
+                .collect();
+
+            let mut result = Vec::new();
+            for capture in captures {
+                let name = highlight_maps[capture.grammar_index].get(capture.index);
+                result.push(name);
+            }
+            result
+        }
+
+        use crate::SyntaxTheme;
+        fn print_highlight_color_hex(
+            highlight_id: HighlightId,
+            syntax_theme: &SyntaxTheme,
+        ) -> Option<String> {
+            let style = highlight_id.style(syntax_theme)?;
+            let color = style.color?;
+            let rgba = color.to_rgb();
+            let r = (rgba.r * 255.0) as u8;
+            let g = (rgba.g * 255.0) as u8;
+            let b = (rgba.b * 255.0) as u8;
+            let a = (rgba.a * 255.0) as u8;
+            Some(format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, a))
+        }
+
+        fn print_node_with_text(
+            cursor: &mut tree_sitter::TreeCursor,
+            text: &BufferSnapshot,
+            file: &mut File,
+            syntax_snapshot: &SyntaxSnapshot,
+            highlight_map: &HighlightMap,
+            depth: usize,
+        ) {
+            let node = cursor.node();
+            let indent = "  ".repeat(depth);
+            let byte_range = node.byte_range();
+
+            // Extract the actual text for this node
+            let node_text: String = text.text_for_range(byte_range.clone()).collect();
+
+            // Escape newlines and tabs for readability
+            let display_text = node_text.replace('\n', "\\n").replace('\t', "\\t");
+
+            // Truncate very long text
+            let display_text = if display_text.len() > 50 {
+                format!("{}...", &display_text[..50])
+            } else {
+                display_text
+            };
+
+            // Get highlight information for this node's range
+            let highlights: Vec<HighlightId> =
+                get_highlights_for_cursor(cursor, syntax_snapshot, text, highlight_map);
+
+            let highlight_info = if !highlights.is_empty() {
+                highlights
+                    .iter()
+                    .map(|h: &HighlightId| format!("@{}", h.0))
+                    //.map(|h: &HighlightId| format!("{}", print_highlight_color_hex(h, );))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                "no highlight".to_string()
+            };
+
+            writeln!(
+                file,
+                "{}({} [{}..{}] \"{}\" [{}])",
+                indent,
+                node.kind(),
+                byte_range.start,
+                byte_range.end,
+                display_text,
+                highlight_info
+            )
+            .ok();
+
+            // Recursively print children
+            if cursor.goto_first_child() {
+                loop {
+                    print_node_with_text(
+                        cursor,
+                        text,
+                        file,
+                        syntax_snapshot,
+                        highlight_map,
+                        depth + 1,
+                    );
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+                cursor.goto_parent();
+            }
+        }
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        use std::io::Write;
+        let file_path = format!("treesitter_full_parse_{}.txt", timestamp);
+        if let Ok(mut file) = File::create(&file_path) {
+            writeln!(file, "=== FULL PARSE TREE (including reparsed parts) ===").ok();
+            writeln!(file, "Total layers: {}", self.layers.iter().count()).ok();
+            writeln!(file, "Parsed version: {:?}", self.parsed_version).ok();
+            writeln!(
+                file,
+                "Invalidated ranges: {:?}\n",
+                LogOffsetRanges(&invalidated_ranges, text)
+            )
+            .ok();
+
+            for (i, layer) in self.layers.iter().enumerate() {
+                writeln!(file, "{:=<60}", "").ok();
+                writeln!(file, "LAYER {} (depth: {})", i, layer.depth).ok();
+                writeln!(file, "{:=<60}", "").ok();
+
+                match &layer.content {
+                    SyntaxLayerContent::Parsed {
+                        tree,
+                        language,
+                        included_sub_ranges,
+                    } => {
+                        let layer_range = layer.range.to_offset(text);
+                        writeln!(file, "Language: {}", language.name()).ok();
+                        writeln!(file, "Range: {:?}", layer_range).ok();
+                        writeln!(file, "Included sub-ranges: {:?}", included_sub_ranges).ok();
+
+                        let root_node = tree.root_node();
+                        writeln!(file, "\nTree S-Expression:").ok();
+                        writeln!(file, "{}", root_node.to_sexp()).ok();
+
+                        // Walk the tree and print each node with its text
+                        writeln!(file, "Nodes with tokens:").ok();
+                        let mut cursor = root_node.walk();
+                        let highlight = language
+                            .grammar()
+                            .and_then(|g| Some(g.highlight_map()))
+                            .unwrap_or_default();
+
+                        print_node_with_text(&mut cursor, text, &mut file, &self, &highlight, 0);
+
+                        writeln!(file, "\nTree Statistics:").ok();
+                        writeln!(file, "  Root node kind: {}", root_node.kind()).ok();
+                        writeln!(file, "  Root node range: {:?}", root_node.range()).ok();
+                        writeln!(file, "  Child count: {}", root_node.child_count()).ok();
+                    }
+                    SyntaxLayerContent::Pending { language_name } => {
+                        writeln!(file, "Language: {} (PENDING)", language_name).ok();
+                        writeln!(file, "Range: {:?}", layer.range.to_offset(text)).ok();
+                    }
+                }
+            }
+
+            log::info!("Wrote full parse tree to {}", file_path);
+        }
         self.interpolated_version = text.version.clone();
         self.parsed_version = text.version.clone();
         #[cfg(debug_assertions)]
