@@ -538,6 +538,7 @@ pub enum InlineBlameLocation {
     #[default]
     Inline,
     StatusBar,
+    RightAlign,
 }
 
 impl From<settings::InlineBlameLocation> for InlineBlameLocation {
@@ -545,6 +546,7 @@ impl From<settings::InlineBlameLocation> for InlineBlameLocation {
         match location {
             settings::InlineBlameLocation::Inline => InlineBlameLocation::Inline,
             settings::InlineBlameLocation::StatusBar => InlineBlameLocation::StatusBar,
+            settings::InlineBlameLocation::RightAlign => InlineBlameLocation::RightAlign,
         }
     }
 }

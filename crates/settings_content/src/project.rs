@@ -680,6 +680,8 @@ pub enum InlineBlameLocation {
     Inline,
     /// Show git blame in the status bar at the bottom of the window.
     StatusBar,
+    /// Show git blame inline, aligned to the right edge of the viewport.
+    RightAlign,
 }
 
 #[with_fallible_options]

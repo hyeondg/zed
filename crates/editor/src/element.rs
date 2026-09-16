@@ -2108,6 +2108,7 @@ impl EditorElement {
         scroll_position: gpui::Point<ScrollOffset>,
         scroll_pixel_position: gpui::Point<ScrollPixelOffset>,
         line_height: Pixels,
+        editor_width: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<InlineBlameLayout> {
@@ -2149,32 +2150,43 @@ impl EditorElement {
             content_origin.y + line_height * ((display_row.as_f64() - scroll_position.y) as f32);
 
         let start_x = {
-            let line_end = if let Some(crease_trailer) = crease_trailer {
-                crease_trailer.bounds.right()
-            } else {
-                Pixels::from(
-                    ScrollPixelOffset::from(content_origin.x + line_layout.width)
-                        - scroll_pixel_position.x,
-                )
-            };
+            let inline_blame_settings = ProjectSettings::get_global(cx).git.inline_blame;
+            match inline_blame_settings.location {
+                InlineBlameLocation::RightAlign => {
+                    // Size is not yet known; resolve after layout_as_root below.
+                    None
+                }
+                InlineBlameLocation::Inline | InlineBlameLocation::StatusBar => {
+                    let line_end = if let Some(crease_trailer) = crease_trailer {
+                        crease_trailer.bounds.right()
+                    } else {
+                        Pixels::from(
+                            ScrollPixelOffset::from(content_origin.x + line_layout.width)
+                                - scroll_pixel_position.x,
+                        )
+                    };
 
-            let padded_line_end = line_end + padding;
+                    let padded_line_end = line_end + padding;
 
-            let min_column_in_pixels = column_pixels(
-                &self.style,
-                ProjectSettings::get_global(cx).git.inline_blame.min_column as usize,
-                window,
-            );
-            let min_start = Pixels::from(
-                ScrollPixelOffset::from(content_origin.x + min_column_in_pixels)
-                    - scroll_pixel_position.x,
-            );
+                    let min_column_in_pixels = column_pixels(
+                        &self.style,
+                        inline_blame_settings.min_column as usize,
+                        window,
+                    );
+                    let min_start = Pixels::from(
+                        ScrollPixelOffset::from(content_origin.x + min_column_in_pixels)
+                            - scroll_pixel_position.x,
+                    );
 
-            cmp::max(padded_line_end, min_start)
+                    Some(cmp::max(padded_line_end, min_start))
+                }
+            }
         };
 
-        let absolute_offset = point(start_x, start_y);
         let size = element.layout_as_root(AvailableSpace::min_size(), window, cx);
+
+        let start_x = start_x.unwrap_or_else(|| content_origin.x + editor_width - size.width);
+        let absolute_offset = point(start_x, start_y);
         let bounds = Bounds::new(absolute_offset, size);
 
         element.prepaint_as_root(absolute_offset, AvailableSpace::min_size(), window, cx);
@@ -9058,6 +9070,7 @@ impl Element for EditorElement {
                                     scroll_position,
                                     scroll_pixel_position,
                                     line_height,
+                                    editor_width,
                                     window,
                                     cx,
                                 ) {

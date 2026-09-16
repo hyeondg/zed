@@ -1795,6 +1795,8 @@
       // Delay is restarted with every cursor movement.
       "delay_ms": 0,
       // Where to render the blame information when it is enabled.
+      // Possible values: "inline", "status_bar", "right_align".
+      // "right_align" aligns the blame annotation to the right edge of the viewport.
       "location": "inline",
       // The amount of padding between the end of the source line and the start
       // of the inline blame in units of em widths.
