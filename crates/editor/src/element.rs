@@ -9060,6 +9060,14 @@ impl Element for EditorElement {
                                 crease_trailers.get(line_ix),
                             ) {
                                 let crease_trailer_layout = crease_trailer.as_ref();
+                                let git_blame_editor_width = {
+                                    let settings = EditorSettings::get_global(cx);
+                                    if settings.minimap.show == ShowMinimap::Always {
+                                        editor_width
+                                    } else {
+                                        editor_width + minimap_width
+                                    }
+                                };
                                 if let Some(layout) = self.layout_inline_blame(
                                     display_row,
                                     row_info,
@@ -9070,7 +9078,7 @@ impl Element for EditorElement {
                                     scroll_position,
                                     scroll_pixel_position,
                                     line_height,
-                                    editor_width,
+                                    git_blame_editor_width,
                                     window,
                                     cx,
                                 ) {
